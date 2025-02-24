@@ -116,6 +116,67 @@ const extractBriefSummary = (analysis) => {
   return analysis.summary;
 };
 
+// Test endpoint for YouTube API
+app.get('/api/test-youtube', async (req, res) => {
+  try {
+    const videoId = req.query.id || 'dQw4w9WgXcQ'; // Default to a known video if none provided
+    
+    console.log('Testing YouTube API with video ID:', videoId);
+    
+    const response = await axios.get(
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${YOUTUBE_API_KEY}`
+    );
+    
+    res.json({ 
+      success: true, 
+      data: response.data,
+      message: 'YouTube API connection successful'
+    });
+  } catch (error) {
+    console.error('YouTube API test failed:', error.message);
+    
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      response: error.response ? {
+        status: error.response.status,
+        data: error.response.data
+      } : null,
+      message: 'YouTube API connection failed'
+    });
+  }
+});
+
+// Test endpoint for OpenAI API
+app.get('/api/test-openai', async (req, res) => {
+  try {
+    console.log('Testing OpenAI API connection');
+    
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: "Say hello!" }
+      ],
+      max_tokens: 10
+    });
+    
+    res.json({ 
+      success: true, 
+      data: response,
+      message: 'OpenAI API connection successful'
+    });
+  } catch (error) {
+    console.error('OpenAI API test failed:', error.message);
+    
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      message: 'OpenAI API connection failed'
+    });
+  }
+});
+
 // Endpoint to get video data and transcript
 app.get('/api/video-data', async (req, res) => {
   try {
@@ -138,9 +199,13 @@ app.get('/api/video-data', async (req, res) => {
     let chapters = [];
     
     try {
+      console.log(`Fetching YouTube data with API key: ${YOUTUBE_API_KEY ? 'CONFIGURED' : 'MISSING'}`);
+      
       const detailsResponse = await axios.get(
         `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`
       );
+      
+      console.log('YouTube API response received');
       
       if (detailsResponse.data.items && detailsResponse.data.items.length > 0) {
         const item = detailsResponse.data.items[0];
@@ -182,33 +247,51 @@ app.get('/api/video-data', async (req, res) => {
           duration: formattedDuration
         };
         
+        console.log('Extracting chapters from description');
         chapters = extractChaptersFromDescription(snippet.description);
+        console.log(`Found ${chapters.length} chapters`);
         
         if (chapters.length === 0) {
+          console.log('No chapters found in description');
           return res.status(400).json({ 
             message: 'This video does not have chapters. Currently, only videos with chapters are supported.' 
           });
         }
+      } else {
+        console.log('No video items found in YouTube response');
+        console.log('Response data:', JSON.stringify(detailsResponse.data));
+        return res.status(404).json({ message: 'Video not found on YouTube' });
       }
     } catch (error) {
       console.error('Error fetching video details:', error.message);
       if (error.response) {
-        console.error('YouTube API error data:', error.response.data);
         console.error('YouTube API error status:', error.response.status);
+        console.error('YouTube API error data:', JSON.stringify(error.response.data));
+      } else if (error.request) {
+        console.error('No response received from YouTube API');
+      } else {
+        console.error('Error setting up request:', error.message);
       }
+      
       return res.status(500).json({ 
         message: 'Failed to fetch video details',
-        error: error.message 
+        error: error.message,
+        details: error.response ? error.response.data : 'No response details'
       });
     }
     
     // Fetch transcript
     try {
+      console.log('Fetching transcript for video:', videoId);
+      
       const transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
       
       if (!transcriptResponse || transcriptResponse.length === 0) {
+        console.log('No transcript found for video');
         return res.status(404).json({ message: 'No transcript found for this video' });
       }
+      
+      console.log(`Transcript fetched successfully with ${transcriptResponse.length} segments`);
       
       const cleanTranscriptData = transcriptResponse.map(item => ({
         ...item,
@@ -220,7 +303,9 @@ app.get('/api/video-data', async (req, res) => {
         .join(' ')
         .replace(/\s+/g, ' ');
       
+      console.log('Organizing transcript by chapters');
       const organizedTranscript = organizeTranscriptByChapters(cleanTranscriptData, chapters);
+      console.log(`Organized transcript into ${organizedTranscript.length} chapter segments`);
       
       res.json({
         videoDetails,
@@ -230,15 +315,24 @@ app.get('/api/video-data', async (req, res) => {
         organizedTranscript
       });
     } catch (error) {
-      console.error('Error fetching transcript:', error);
-      return res.status(404).json({ message: 'No transcript found for this video' });
+      console.error('Error fetching transcript:', error.message);
+      console.error('Full error:', error);
+      
+      return res.status(404).json({ 
+        message: 'No transcript found for this video or transcript service error',
+        error: error.message,
+        stack: error.stack
+      });
     }
     
   } catch (error) {
-    console.error('Error processing video:', error);
+    console.error('Error processing video:', error.message);
+    console.error('Stack trace:', error.stack);
+    
     res.status(500).json({ 
       message: 'Failed to process video',
-      error: error.message 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'production' ? null : error.stack
     });
   }
 });
@@ -252,10 +346,13 @@ app.post('/api/enhance-chapters', async (req, res) => {
       return res.status(400).json({ message: 'Invalid chapters data' });
     }
     
+    console.log(`Enhancing ${chapters.length} chapters`);
     const enhancedChapters = [];
     
     for (const chapter of chapters) {
       try {
+        console.log(`Enhancing chapter: "${chapter.title}"`);
+        
         const prompt = `You are an expert transcript editor specializing in improving the readability of automatically generated YouTube video transcripts. Your task is to enhance this transcript segment while preserving its complete meaning and information.
 
 Please make these specific improvements:
@@ -273,6 +370,7 @@ ${chapter.content}
 
 Provide the enhanced version that maintains all information but is easier to read.`;
 
+        console.log('Calling OpenAI API to enhance transcript');
         const response = await openai.chat.completions.create({
           model: "gpt-3.5-turbo",
           messages: [
@@ -283,25 +381,37 @@ Provide the enhanced version that maintains all information but is easier to rea
           max_tokens: 1500
         });
         
+        console.log('OpenAI enhancement complete');
+        
         enhancedChapters.push({
           ...chapter,
           enhancedContent: response.choices[0].message.content
         });
       } catch (error) {
-        console.error(`Error enhancing chapter "${chapter.title}":`, error);
+        console.error(`Error enhancing chapter "${chapter.title}":`, error.message);
+        if (error.response) {
+          console.error('OpenAI API error details:', error.response.data);
+        }
+        
+        // Fall back to original content if enhancement fails
         enhancedChapters.push({
           ...chapter,
-          enhancedContent: chapter.content
+          enhancedContent: chapter.content,
+          enhancementError: error.message
         });
       }
     }
     
+    console.log('All chapters enhanced, sending response');
     res.json({ enhancedChapters });
   } catch (error) {
-    console.error('Error enhancing chapters:', error);
+    console.error('Error enhancing chapters:', error.message);
+    console.error('Stack trace:', error.stack);
+    
     res.status(500).json({ 
       message: 'Failed to enhance chapters',
-      error: error.message 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'production' ? null : error.stack
     });
   }
 });
@@ -319,6 +429,7 @@ app.post('/api/generate-sequential-analyses', async (req, res) => {
       return res.status(400).json({ message: 'Invalid chapter indices' });
     }
     
+    console.log(`Generating analyses for chapters ${startIndex} to ${endIndex}`);
     const chapterAnalyses = [];
     const contextSummaries = [];
     
@@ -326,6 +437,8 @@ app.post('/api/generate-sequential-analyses', async (req, res) => {
       const chapter = chapters[i];
       
       try {
+        console.log(`Analyzing chapter ${i+1}: "${chapter.title}"`);
+        
         let contextPrompt = '';
         if (contextSummaries.length > 0) {
           contextPrompt = 'Context from previous chapters:\n' +
@@ -370,6 +483,7 @@ Format your response with clear headings for each section, and only include a ME
 Transcript:
 ${chapter.content}`;
 
+        console.log('Calling OpenAI API for chapter analysis');
         const response = await openai.chat.completions.create({
           model: "gpt-3.5-turbo",
           messages: [
@@ -380,6 +494,7 @@ ${chapter.content}`;
           max_tokens: 1000
         });
         
+        console.log('OpenAI analysis complete');
         const analysis = response.choices[0].message.content;
         
         let summary = '';
@@ -436,7 +551,11 @@ ${chapter.content}`;
         contextSummaries.push(summary);
         
       } catch (error) {
-        console.error(`Error analyzing chapter "${chapter.title}":`, error);
+        console.error(`Error analyzing chapter "${chapter.title}":`, error.message);
+        if (error.response) {
+          console.error('OpenAI API error details:', error.response.data);
+        }
+        
         // If analysis fails, push empty analysis but continue with others
         chapterAnalyses.push({
           chapterIndex: i,
@@ -449,26 +568,40 @@ ${chapter.content}`;
       }
     }
     
+    console.log('All chapters analyzed, sending response');
     res.json({ chapterAnalyses });
   } catch (error) {
-    console.error('Error generating sequential analyses:', error);
+    console.error('Error generating sequential analyses:', error.message);
+    console.error('Stack trace:', error.stack);
+    
     res.status(500).json({ 
       message: 'Failed to generate analyses',
-      error: error.message 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'production' ? null : error.stack
     });
   }
 });
 
-// Root endpoint
+// Enhanced root endpoint
 app.get('/', (req, res) => {
-  res.send('YouTube Transcript API is running');
+  res.send(`
+    <h1>YouTube Transcript API is running</h1>
+    <p>Environment: ${process.env.NODE_ENV || 'development'}</p>
+    <p>YouTube API Key configured: ${YOUTUBE_API_KEY ? 'Yes' : 'No'}</p>
+    <p>OpenAI API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}</p>
+    <p>CORS Origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}</p>
+    <p>Server Time: ${new Date().toISOString()}</p>
+    <h2>Test Endpoints:</h2>
+    <ul>
+      <li><a href="/api/test-youtube">Test YouTube API</a></li>
+      <li><a href="/api/test-openai">Test OpenAI API</a></li>
+    </ul>
+  `);
 });
 
 // Start server
-// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  // Add the new logging statements right here
   console.log(`CORS configured for origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
   console.log(`YouTube API Key configured: ${YOUTUBE_API_KEY ? 'Yes' : 'No'}`);
   console.log(`OpenAI API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
