@@ -177,6 +177,41 @@ app.get('/api/test-openai', async (req, res) => {
   }
 });
 
+// New test endpoint for alternative transcript method
+app.get('/api/test-transcript-alternative/:videoId', async (req, res) => {
+  const { videoId } = req.params;
+  
+  console.log('Testing alternative transcript method for video:', videoId);
+  
+  try {
+    // Try direct YouTube API approach
+    const response = await axios.get(`https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`);
+    console.log('Direct YouTube API response:', response.status);
+    
+    // Try a second method via video_info
+    const videoInfoResponse = await axios.get(`https://www.youtube.com/get_video_info?video_id=${videoId}`);
+    console.log('Video info response received, status:', videoInfoResponse.status);
+    
+    res.json({ 
+      success: true, 
+      directApiStatus: response.status,
+      directApiData: response.data,
+      videoInfoStatus: videoInfoResponse.status
+    });
+  } catch (error) {
+    console.error('Alternative transcript test failed:', error.message);
+    
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      response: error.response ? {
+        status: error.response.status,
+        data: error.response.data
+      } : null
+    });
+  }
+});
+
 // Endpoint to get video data and transcript
 app.get('/api/video-data', async (req, res) => {
   try {
@@ -280,18 +315,66 @@ app.get('/api/video-data', async (req, res) => {
       });
     }
     
-    // Fetch transcript
+    // Fetch transcript with enhanced debugging
     try {
-      console.log('Fetching transcript for video:', videoId);
+      console.log('Attempting to fetch transcript for:', videoId);
       
-      const transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
+      // Log library version if available
+      try {
+        const packageInfo = require('youtube-transcript/package.json');
+        console.log('YouTube Transcript library version:', packageInfo.version);
+      } catch (versionErr) {
+        console.log('Could not determine library version:', versionErr.message);
+      }
+
+      // Try multiple approaches to get the transcript
+      let transcriptResponse = null;
+      let transcriptMethod = '';
+      
+      // First approach: Try with explicit options
+      try {
+        console.log('Trying to fetch transcript with explicit options');
+        transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId, {
+          lang: 'en',
+          country: 'US'
+        });
+        transcriptMethod = 'explicit-options';
+      } catch (explicitOptionsError) {
+        console.log('Explicit options approach failed:', explicitOptionsError.message);
+        
+        // Second approach: Try the default method
+        try {
+          console.log('Trying default transcript fetch method');
+          transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
+          transcriptMethod = 'default';
+        } catch (defaultMethodError) {
+          console.log('Default method failed:', defaultMethodError.message);
+          
+          // Third approach: Try our alternative method via direct API
+          try {
+            console.log('Trying alternative direct API method');
+            const alternativeResponse = await axios.get(`https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`);
+            
+            if (alternativeResponse.data && Object.keys(alternativeResponse.data).length > 0) {
+              console.log('Alternative method succeeded, but conversion not implemented');
+              // We would need to convert this format to match YoutubeTranscript format
+              throw new Error('Alternative transcript method not fully implemented');
+            } else {
+              throw new Error('Empty response from alternative method');
+            }
+          } catch (alternativeError) {
+            console.log('Alternative method failed:', alternativeError.message);
+            throw defaultMethodError; // Throw the original error
+          }
+        }
+      }
+      
+      console.log(`Transcript fetched successfully with ${transcriptMethod} method, ${transcriptResponse.length} segments`);
       
       if (!transcriptResponse || transcriptResponse.length === 0) {
         console.log('No transcript found for video');
         return res.status(404).json({ message: 'No transcript found for this video' });
       }
-      
-      console.log(`Transcript fetched successfully with ${transcriptResponse.length} segments`);
       
       const cleanTranscriptData = transcriptResponse.map(item => ({
         ...item,
@@ -312,11 +395,21 @@ app.get('/api/video-data', async (req, res) => {
         chapters,
         transcript: plainText,
         transcriptData: cleanTranscriptData,
-        organizedTranscript
+        organizedTranscript,
+        transcriptMethod
       });
     } catch (error) {
       console.error('Error fetching transcript:', error.message);
       console.error('Full error:', error);
+      
+      // Improved error handling for transcript-disabled videos
+      if (error.message && error.message.includes('Transcript is disabled')) {
+        return res.status(404).json({ 
+          message: 'This video does not have an available transcript. Please try a different video.',
+          error: error.message,
+          videoId
+        });
+      }
       
       return res.status(404).json({ 
         message: 'No transcript found for this video or transcript service error',
@@ -595,6 +688,7 @@ app.get('/', (req, res) => {
     <ul>
       <li><a href="/api/test-youtube">Test YouTube API</a></li>
       <li><a href="/api/test-openai">Test OpenAI API</a></li>
+      <li><a href="/api/test-transcript-alternative/dQw4w9WgXcQ">Test Alternative Transcript Method</a></li>
     </ul>
   `);
 });
