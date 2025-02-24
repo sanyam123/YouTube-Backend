@@ -19,12 +19,13 @@ const openai = new OpenAI({
 });
 
 // Middleware
-const corsOptions = {
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-  credentials: true,
-  optionsSuccessStatus: 200
-};
-app.use(cors(corsOptions));
+// const corsOptions = {
+//   origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+//   credentials: true,
+//   optionsSuccessStatus: 200
+// };
+// app.use(cors(corsOptions));
+app.use(cors());
 app.use(express.json());
 
 // Extract video ID from YouTube URL
