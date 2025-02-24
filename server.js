@@ -191,7 +191,11 @@ app.get('/api/video-data', async (req, res) => {
         }
       }
     } catch (error) {
-      console.error('Error fetching video details:', error);
+      console.error('Error fetching video details:', error.message);
+      if (error.response) {
+        console.error('YouTube API error data:', error.response.data);
+        console.error('YouTube API error status:', error.response.status);
+      }
       return res.status(500).json({ 
         message: 'Failed to fetch video details',
         error: error.message 
