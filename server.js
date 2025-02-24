@@ -19,7 +19,12 @@ const openai = new OpenAI({
 });
 
 // Middleware
-app.use(cors());
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Extract video ID from YouTube URL
@@ -456,6 +461,11 @@ app.get('/', (req, res) => {
 });
 
 // Start server
+// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  // Add the new logging statements right here
+  console.log(`CORS configured for origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
+  console.log(`YouTube API Key configured: ${YOUTUBE_API_KEY ? 'Yes' : 'No'}`);
+  console.log(`OpenAI API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
 });
