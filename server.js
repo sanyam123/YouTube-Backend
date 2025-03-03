@@ -1,7 +1,6 @@
 // server.js
 const express = require('express');
 const cors = require('cors');
-const { YoutubeTranscript } = require('youtube-transcript');
 const axios = require('axios');
 const dotenv = require('dotenv');
 const { OpenAI } = require('openai');
@@ -12,6 +11,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+const SEARCHAPI_KEY = process.env.SEARCHAPI_KEY;
 
 // Initialize OpenAI API with your key
 const openai = new OpenAI({
@@ -39,34 +39,75 @@ const extractVideoId = (url) => {
 const extractChaptersFromDescription = (description) => {
   if (!description) return [];
   
-  const timestampRegex = /([0-9]+:)?([0-9]+):([0-9]+)[ \t]+(.+)($|\n)/g;
-  const matches = [...description.matchAll(timestampRegex)];
+  // Try multiple timestamp patterns
+  // Pattern 1: Regular format - "00:00 Title"
+  const regularPattern = /([0-9]+:)?([0-9]+):([0-9]+)[ \t-]+(.+?)($|\n)/g;
   
-  if (matches.length === 0) return [];
+  // Pattern 2: Parentheses format - "(00:00) Title"
+  const parenthesesPattern = /\(([0-9]+:)?([0-9]+):([0-9]+)\)[ \t-]*(.+?)($|\n)/g;
+  
+  // Try the parentheses pattern first (as in your example)
+  let matches = [...description.matchAll(parenthesesPattern)];
+  
+  // If no matches, try the regular pattern
+  if (matches.length === 0) {
+    matches = [...description.matchAll(regularPattern)];
+  }
+  
+  if (matches.length === 0) {
+    console.log('No chapters found in description using regex patterns');
+    console.log('Description excerpt:', description.substring(0, 200) + '...');
+    return [];
+  }
+  
+  console.log(`Found ${matches.length} potential chapters in the description`);
   
   const chapters = matches.map(match => {
     let hours = 0;
     let minutes = 0;
     let seconds = 0;
     
-    if (match[1]) { // If hours are present
-      hours = parseInt(match[1].replace(':', ''), 10);
-      minutes = parseInt(match[2], 10);
-      seconds = parseInt(match[3], 10);
-    } else {
-      minutes = parseInt(match[2], 10);
-      seconds = parseInt(match[3], 10);
+    // For parentheses pattern
+    if (match[0].includes('(')) {
+      if (match[1]) { // If hours are present
+        hours = parseInt(match[1].replace(':', ''), 10);
+        minutes = parseInt(match[2], 10);
+        seconds = parseInt(match[3], 10);
+      } else {
+        minutes = parseInt(match[2], 10);
+        seconds = parseInt(match[3], 10);
+      }
+      
+      const timeInSeconds = hours * 3600 + minutes * 60 + seconds;
+      
+      return {
+        title: match[4].trim(),
+        time: timeInSeconds,
+        timeFormatted: `${hours > 0 ? hours + ':' : ''}${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+      };
+    } 
+    // For regular pattern
+    else {
+      if (match[1]) { // If hours are present
+        hours = parseInt(match[1].replace(':', ''), 10);
+        minutes = parseInt(match[2], 10);
+        seconds = parseInt(match[3], 10);
+      } else {
+        minutes = parseInt(match[2], 10);
+        seconds = parseInt(match[3], 10);
+      }
+      
+      const timeInSeconds = hours * 3600 + minutes * 60 + seconds;
+      
+      return {
+        title: match[4].trim(),
+        time: timeInSeconds,
+        timeFormatted: match[0].split(/[ \t-]/)[0].trim()
+      };
     }
-    
-    const timeInSeconds = hours * 3600 + minutes * 60 + seconds;
-    
-    return {
-      title: match[4].trim(),
-      time: timeInSeconds,
-      timeFormatted: match[0].split(' ')[0].trim()
-    };
   });
   
+  console.log(`Successfully processed ${chapters.length} chapters`);
   return chapters;
 };
 
@@ -178,29 +219,28 @@ app.get('/api/test-openai', async (req, res) => {
   }
 });
 
-// New test endpoint for alternative transcript method
-app.get('/api/test-transcript-alternative/:videoId', async (req, res) => {
+// Test endpoint for SearchAPI.io
+app.get('/api/test-searchapi/:videoId', async (req, res) => {
   const { videoId } = req.params;
   
-  console.log('Testing alternative transcript method for video:', videoId);
+  console.log('Testing SearchAPI.io transcript method for video:', videoId);
   
   try {
-    // Try direct YouTube API approach
-    const response = await axios.get(`https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`);
-    console.log('Direct YouTube API response:', response.status);
-    
-    // Try a second method via video_info
-    const videoInfoResponse = await axios.get(`https://www.youtube.com/get_video_info?video_id=${videoId}`);
-    console.log('Video info response received, status:', videoInfoResponse.status);
+    const response = await axios.get('https://www.searchapi.io/api/v1/search', {
+      params: {
+        engine: 'youtube_transcripts',
+        video_id: videoId,
+        lang: 'en',
+        api_key: SEARCHAPI_KEY
+      }
+    });
     
     res.json({ 
       success: true, 
-      directApiStatus: response.status,
-      directApiData: response.data,
-      videoInfoStatus: videoInfoResponse.status
+      data: response.data
     });
   } catch (error) {
-    console.error('Alternative transcript test failed:', error.message);
+    console.error('SearchAPI.io test failed:', error.message);
     
     res.status(500).json({ 
       success: false, 
@@ -212,6 +252,105 @@ app.get('/api/test-transcript-alternative/:videoId', async (req, res) => {
     });
   }
 });
+
+// Fetch video metadata from YouTube API
+async function fetchVideoMetadata(videoId) {
+  console.log(`Fetching YouTube metadata with API key: ${YOUTUBE_API_KEY ? 'CONFIGURED' : 'MISSING'}`);
+  
+  const detailsResponse = await axios.get(
+    `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`
+  );
+  
+  console.log('YouTube API response received');
+  
+  if (!detailsResponse.data.items || detailsResponse.data.items.length === 0) {
+    console.log('No video items found in YouTube response');
+    console.log('Response data:', JSON.stringify(detailsResponse.data));
+    throw new Error('Video not found on YouTube');
+  }
+  
+  const item = detailsResponse.data.items[0];
+  const snippet = item.snippet;
+  const statistics = item.statistics;
+  const contentDetails = item.contentDetails;
+  
+  let formattedDuration = '';
+  if (contentDetails && contentDetails.duration) {
+    const duration = contentDetails.duration;
+    const match = duration.match(/PT(\d+H)?(\d+M)?(\d+S)?/);
+    
+    const hours = match[1] ? match[1].replace('H', '') : 0;
+    const minutes = match[2] ? match[2].replace('M', '') : 0;
+    const seconds = match[3] ? match[3].replace('S', '') : 0;
+    
+    if (hours > 0) {
+      formattedDuration = `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    } else {
+      formattedDuration = `${minutes}:${String(seconds).padStart(2, '0')}`;
+    }
+  }
+  
+  const thumbnails = snippet.thumbnails;
+  const thumbnailUrl = thumbnails.maxres?.url || 
+                     thumbnails.high?.url || 
+                     thumbnails.medium?.url || 
+                     thumbnails.default?.url;
+  
+  const videoDetails = {
+    title: snippet.title,
+    channelTitle: snippet.channelTitle,
+    publishedAt: snippet.publishedAt,
+    description: snippet.description,
+    thumbnailUrl: thumbnailUrl,
+    viewCount: statistics?.viewCount,
+    likeCount: statistics?.likeCount,
+    commentCount: statistics?.commentCount,
+    duration: formattedDuration
+  };
+  
+  console.log('Extracting chapters from description');
+  const chapters = extractChaptersFromDescription(snippet.description);
+  console.log(`Found ${chapters.length} chapters`);
+  
+  if (chapters.length === 0) {
+    console.log('No chapters found in description');
+    throw new Error('This video does not have chapters. Currently, only videos with chapters are supported.');
+  }
+  
+  return { videoDetails, chapters };
+}
+
+// Fetch transcript from SearchAPI.io
+async function fetchTranscriptFromSearchAPI(videoId) {
+  console.log('Fetching transcript via SearchAPI.io for:', videoId);
+  
+  const response = await axios.get('https://www.searchapi.io/api/v1/search', {
+    params: {
+      engine: 'youtube_transcripts',
+      video_id: videoId,
+      lang: 'en',
+      api_key: SEARCHAPI_KEY
+    }
+  });
+  
+  if (!response.data || !response.data.transcripts || response.data.transcripts.length === 0) {
+    throw new Error('No transcript found for this video');
+  }
+  
+  // Convert SearchAPI.io format to match our expected format
+  const transcriptData = response.data.transcripts.map(item => ({
+    text: cleanHtmlEntities(item.text),
+    offset: item.start,
+    duration: item.duration
+  }));
+  
+  const plainText = transcriptData
+    .map(item => item.text)
+    .join(' ')
+    .replace(/\s+/g, ' ');
+  
+  return { transcriptData, plainText };
+}
 
 // Endpoint to get video data and transcript
 app.get('/api/video-data', async (req, res) => {
@@ -230,193 +369,54 @@ app.get('/api/video-data', async (req, res) => {
     
     console.log('Processing video ID:', videoId);
     
-    // Fetch video details from YouTube API
-    let videoDetails = null;
-    let chapters = [];
-    
     try {
-      console.log(`Fetching YouTube data with API key: ${YOUTUBE_API_KEY ? 'CONFIGURED' : 'MISSING'}`);
-      
-      const detailsResponse = await axios.get(
-        `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`
-      );
-      
-      console.log('YouTube API response received');
-      
-      if (detailsResponse.data.items && detailsResponse.data.items.length > 0) {
-        const item = detailsResponse.data.items[0];
-        const snippet = item.snippet;
-        const statistics = item.statistics;
-        const contentDetails = item.contentDetails;
+      // Make both API calls in parallel
+      const [metadataResult, transcriptResult] = await Promise.all([
+        fetchVideoMetadata(videoId).catch(error => {
+          console.error('Error fetching video metadata:', error.message);
+          throw error;
+        }),
         
-        let formattedDuration = '';
-        if (contentDetails && contentDetails.duration) {
-          const duration = contentDetails.duration;
-          const match = duration.match(/PT(\d+H)?(\d+M)?(\d+S)?/);
-          
-          const hours = match[1] ? match[1].replace('H', '') : 0;
-          const minutes = match[2] ? match[2].replace('M', '') : 0;
-          const seconds = match[3] ? match[3].replace('S', '') : 0;
-          
-          if (hours > 0) {
-            formattedDuration = `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-          } else {
-            formattedDuration = `${minutes}:${String(seconds).padStart(2, '0')}`;
-          }
-        }
-        
-        const thumbnails = snippet.thumbnails;
-        const thumbnailUrl = thumbnails.maxres?.url || 
-                           thumbnails.high?.url || 
-                           thumbnails.medium?.url || 
-                           thumbnails.default?.url;
-        
-        videoDetails = {
-          title: snippet.title,
-          channelTitle: snippet.channelTitle,
-          publishedAt: snippet.publishedAt,
-          description: snippet.description,
-          thumbnailUrl: thumbnailUrl,
-          viewCount: statistics?.viewCount,
-          likeCount: statistics?.likeCount,
-          commentCount: statistics?.commentCount,
-          duration: formattedDuration
-        };
-        
-        console.log('Extracting chapters from description');
-        chapters = extractChaptersFromDescription(snippet.description);
-        console.log(`Found ${chapters.length} chapters`);
-        
-        if (chapters.length === 0) {
-          console.log('No chapters found in description');
-          return res.status(400).json({ 
-            message: 'This video does not have chapters. Currently, only videos with chapters are supported.' 
-          });
-        }
-      } else {
-        console.log('No video items found in YouTube response');
-        console.log('Response data:', JSON.stringify(detailsResponse.data));
-        return res.status(404).json({ message: 'Video not found on YouTube' });
-      }
-    } catch (error) {
-      console.error('Error fetching video details:', error.message);
-      if (error.response) {
-        console.error('YouTube API error status:', error.response.status);
-        console.error('YouTube API error data:', JSON.stringify(error.response.data));
-      } else if (error.request) {
-        console.error('No response received from YouTube API');
-      } else {
-        console.error('Error setting up request:', error.message);
-      }
+        fetchTranscriptFromSearchAPI(videoId).catch(error => {
+          console.error('Error fetching transcript:', error.message);
+          throw error;
+        })
+      ]);
       
-      return res.status(500).json({ 
-        message: 'Failed to fetch video details',
-        error: error.message,
-        details: error.response ? error.response.data : 'No response details'
-      });
-    }
-    
-    // Fetch transcript with enhanced debugging
-    try {
-      console.log('Attempting to fetch transcript for:', videoId);
-      
-      // Log library version if available
-      try {
-        const packageInfo = require('youtube-transcript/package.json');
-        console.log('YouTube Transcript library version:', packageInfo.version);
-      } catch (versionErr) {
-        console.log('Could not determine library version:', versionErr.message);
-      }
-
-      // Try multiple approaches to get the transcript
-      let transcriptResponse = null;
-      let transcriptMethod = '';
-      
-      // First approach: Try with explicit options
-      try {
-        console.log('Trying to fetch transcript with explicit options');
-        transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId, {
-          lang: 'en',
-          country: 'US'
-        });
-        transcriptMethod = 'explicit-options';
-      } catch (explicitOptionsError) {
-        console.log('Explicit options approach failed:', explicitOptionsError.message);
-        
-        // Second approach: Try the default method
-        try {
-          console.log('Trying default transcript fetch method');
-          transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
-          transcriptMethod = 'default';
-        } catch (defaultMethodError) {
-          console.log('Default method failed:', defaultMethodError.message);
-          
-          // Third approach: Try our alternative method via direct API
-          try {
-            console.log('Trying alternative direct API method');
-            const alternativeResponse = await axios.get(`https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`);
-            
-            if (alternativeResponse.data && Object.keys(alternativeResponse.data).length > 0) {
-              console.log('Alternative method succeeded, but conversion not implemented');
-              // We would need to convert this format to match YoutubeTranscript format
-              throw new Error('Alternative transcript method not fully implemented');
-            } else {
-              throw new Error('Empty response from alternative method');
-            }
-          } catch (alternativeError) {
-            console.log('Alternative method failed:', alternativeError.message);
-            throw defaultMethodError; // Throw the original error
-          }
-        }
-      }
-      
-      console.log(`Transcript fetched successfully with ${transcriptMethod} method, ${transcriptResponse.length} segments`);
-      
-      if (!transcriptResponse || transcriptResponse.length === 0) {
-        console.log('No transcript found for video');
-        return res.status(404).json({ message: 'No transcript found for this video' });
-      }
-      
-      const cleanTranscriptData = transcriptResponse.map(item => ({
-        ...item,
-        text: cleanHtmlEntities(item.text)
-      }));
-      
-      const plainText = cleanTranscriptData
-        .map(item => item.text)
-        .join(' ')
-        .replace(/\s+/g, ' ');
-      
+      // Organize transcript by chapters
       console.log('Organizing transcript by chapters');
-      const organizedTranscript = organizeTranscriptByChapters(cleanTranscriptData, chapters);
+      const organizedTranscript = organizeTranscriptByChapters(
+        transcriptResult.transcriptData, 
+        metadataResult.chapters
+      );
       console.log(`Organized transcript into ${organizedTranscript.length} chapter segments`);
       
       res.json({
-        videoDetails,
-        chapters,
-        transcript: plainText,
-        transcriptData: cleanTranscriptData,
+        videoDetails: metadataResult.videoDetails,
+        chapters: metadataResult.chapters,
+        transcript: transcriptResult.plainText,
+        transcriptData: transcriptResult.transcriptData,
         organizedTranscript,
-        transcriptMethod
+        transcriptMethod: 'searchapi'
       });
-    } catch (error) {
-      console.error('Error fetching transcript:', error.message);
-      console.error('Full error:', error);
       
-      // Improved error handling for transcript-disabled videos
-      if (error.message && error.message.includes('Transcript is disabled')) {
+    } catch (error) {
+      // Handle specific errors
+      if (error.message.includes('does not have chapters')) {
+        return res.status(400).json({ 
+          message: 'This video does not have chapters. Currently, only videos with chapters are supported.' 
+        });
+      }
+      
+      if (error.message.includes('No transcript found')) {
         return res.status(404).json({ 
-          message: 'This video does not have an available transcript. Please try a different video.',
-          error: error.message,
+          message: 'No transcript found for this video. Please try a different video.',
           videoId
         });
       }
       
-      return res.status(404).json({ 
-        message: 'No transcript found for this video or transcript service error',
-        error: error.message,
-        stack: error.stack
-      });
+      // For other errors
+      throw error;
     }
     
   } catch (error) {
@@ -683,13 +683,14 @@ app.get('/', (req, res) => {
     <p>Environment: ${process.env.NODE_ENV || 'development'}</p>
     <p>YouTube API Key configured: ${YOUTUBE_API_KEY ? 'Yes' : 'No'}</p>
     <p>OpenAI API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}</p>
+    <p>SearchAPI.io Key configured: ${SEARCHAPI_KEY ? 'Yes' : 'No'}</p>
     <p>CORS Origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}</p>
     <p>Server Time: ${new Date().toISOString()}</p>
     <h2>Test Endpoints:</h2>
     <ul>
       <li><a href="/api/test-youtube">Test YouTube API</a></li>
       <li><a href="/api/test-openai">Test OpenAI API</a></li>
-      <li><a href="/api/test-transcript-alternative/dQw4w9WgXcQ">Test Alternative Transcript Method</a></li>
+      <li><a href="/api/test-searchapi/dQw4w9WgXcQ">Test SearchAPI.io</a></li>
     </ul>
   `);
 });
@@ -700,4 +701,5 @@ app.listen(PORT, () => {
   console.log(`CORS configured for origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
   console.log(`YouTube API Key configured: ${YOUTUBE_API_KEY ? 'Yes' : 'No'}`);
   console.log(`OpenAI API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
+  console.log(`SearchAPI.io Key configured: ${SEARCHAPI_KEY ? 'Yes' : 'No'}`);
 });
