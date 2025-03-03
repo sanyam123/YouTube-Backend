@@ -27,8 +27,29 @@ console.log('OPENAI_API_KEY configured:', process.env.OPENAI_API_KEY ? 'Yes' : '
 console.log('CORS_ORIGIN:', process.env.CORS_ORIGIN || 'Not configured (will allow all origins)');
 
 // CORS Configuration
+// CORS Configuration - Fix for trailing slash issue
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN || '*', // Default to allowing all origins if not specified
+  origin: function(origin, callback) {
+    // If CORS_ORIGIN is set, normalize it by removing any trailing slash
+    const allowedOrigin = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.replace(/\/$/, '') : '*';
+    
+    // If no origin is provided (e.g., same-origin requests) or if we're allowing all origins
+    if (!origin || allowedOrigin === '*') {
+      callback(null, true);
+      return;
+    }
+    
+    // Normalize the incoming origin by removing any trailing slash
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    
+    // Check if the normalized origin matches our allowed origin
+    if (normalizedOrigin === allowedOrigin) {
+      callback(null, true);
+    } else {
+      console.log(`CORS blocked: ${origin} does not match ${allowedOrigin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
   credentials: true,
   optionsSuccessStatus: 204,
