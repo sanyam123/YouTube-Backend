@@ -11,21 +11,45 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
-const SEARCHAPI_KEY = '6qmL5aHcxy81xfmZ61JsQgax'; // SearchAPI.io API key
+const SEARCHAPI_KEY = process.env.SEARCHAPI_KEY; // Fallback in case env var isn't set
 
 // Initialize OpenAI API with your key
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// Middleware
+// Log configuration on startup
+console.log('Starting server with configuration:');
+console.log('PORT:', PORT);
+console.log('YOUTUBE_API_KEY configured:', YOUTUBE_API_KEY ? 'Yes' : 'No');
+console.log('SEARCHAPI_KEY configured:', SEARCHAPI_KEY ? 'Yes' : 'No');
+console.log('OPENAI_API_KEY configured:', process.env.OPENAI_API_KEY ? 'Yes' : 'No');
+console.log('CORS_ORIGIN:', process.env.CORS_ORIGIN || 'Not configured (will allow all origins)');
+
+// CORS Configuration
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  origin: process.env.CORS_ORIGIN || '*', // Default to allowing all origins if not specified
+  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 204,
+  allowedHeaders: ['Content-Type', 'Authorization']
 };
+
+// Apply CORS to all routes
 app.use(cors(corsOptions));
-app.use(express.json());
+
+// Handle OPTIONS requests explicitly
+app.options('*', cors(corsOptions));
+
+// Parse JSON request bodies
+app.use(express.json({ limit: '50mb' }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  console.log('Request headers:', req.headers);
+  next();
+});
 
 // Extract video ID from YouTube URL
 const extractVideoId = (url) => {
@@ -157,6 +181,27 @@ const extractBriefSummary = (analysis) => {
   return analysis.summary;
 };
 
+// Simple test endpoint for CORS testing
+app.get('/api/cors-test', (req, res) => {
+  console.log('CORS test endpoint accessed');
+  console.log('Request headers:', req.headers);
+  
+  res.json({ 
+    message: 'CORS is working!',
+    origin: req.headers.origin || 'Unknown',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Test endpoint for connection testing
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    message: 'Backend is working!',
+    timestamp: new Date().toISOString(),
+    env: process.env.NODE_ENV || 'development'
+  });
+});
+
 // Test endpoint for YouTube API
 app.get('/api/test-youtube', async (req, res) => {
   try {
@@ -165,7 +210,8 @@ app.get('/api/test-youtube', async (req, res) => {
     console.log('Testing YouTube API with video ID:', videoId);
     
     const response = await axios.get(
-      `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${YOUTUBE_API_KEY}`
+      `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${YOUTUBE_API_KEY}`,
+      { timeout: 10000 } // 10 second timeout
     );
     
     res.json({ 
@@ -199,7 +245,8 @@ app.get('/api/test-openai', async (req, res) => {
         { role: "system", content: "You are a helpful assistant." },
         { role: "user", content: "Say hello!" }
       ],
-      max_tokens: 10
+      max_tokens: 10,
+      timeout: 10000 // 10 second timeout
     });
     
     res.json({ 
@@ -231,7 +278,8 @@ app.get('/api/test-searchapi/:videoId', async (req, res) => {
         video_id: videoId,
         lang: 'en',
         api_key: SEARCHAPI_KEY
-      }
+      },
+      timeout: 15000 // 15 second timeout
     });
     
     res.json({ 
@@ -257,7 +305,8 @@ async function fetchVideoMetadata(videoId) {
   console.log(`Fetching YouTube metadata with API key: ${YOUTUBE_API_KEY ? 'CONFIGURED' : 'MISSING'}`);
   
   const detailsResponse = await axios.get(
-    `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`
+    `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoId}&key=${YOUTUBE_API_KEY}`,
+    { timeout: 30000 } // 30 second timeout
   );
   
   console.log('YouTube API response received');
@@ -329,12 +378,18 @@ async function fetchTranscriptFromSearchAPI(videoId) {
       video_id: videoId,
       lang: 'en',
       api_key: SEARCHAPI_KEY
-    }
+    },
+    timeout: 30000 // 30 second timeout
   });
   
+  console.log('SearchAPI response received, status:', response.status);
+  
   if (!response.data || !response.data.transcripts || response.data.transcripts.length === 0) {
+    console.log('No transcript data found in SearchAPI response');
     throw new Error('No transcript found for this video');
   }
+  
+  console.log(`Found ${response.data.transcripts.length} transcript segments`);
   
   // Convert SearchAPI.io format to match our expected format
   const transcriptData = response.data.transcripts.map(item => ({
@@ -360,16 +415,21 @@ app.get('/api/video-data', async (req, res) => {
       return res.status(400).json({ message: 'Please provide a YouTube video URL' });
     }
     
+    console.log('Processing URL:', url);
+    
     const videoId = extractVideoId(url);
     
     if (!videoId) {
+      console.log('Invalid YouTube URL:', url);
       return res.status(400).json({ message: 'Invalid YouTube URL' });
     }
     
-    console.log('Processing video ID:', videoId);
+    console.log('Extracted video ID:', videoId);
     
     try {
       // Make both API calls in parallel
+      console.log('Making parallel API calls for metadata and transcript');
+      
       const [metadataResult, transcriptResult] = await Promise.all([
         fetchVideoMetadata(videoId).catch(error => {
           console.error('Error fetching video metadata:', error.message);
@@ -384,30 +444,37 @@ app.get('/api/video-data', async (req, res) => {
       
       // Organize transcript by chapters
       console.log('Organizing transcript by chapters');
+      
       const organizedTranscript = organizeTranscriptByChapters(
         transcriptResult.transcriptData, 
         metadataResult.chapters
       );
+      
       console.log(`Organized transcript into ${organizedTranscript.length} chapter segments`);
       
-      res.json({
+      const responseData = {
         videoDetails: metadataResult.videoDetails,
         chapters: metadataResult.chapters,
         transcript: transcriptResult.plainText,
         transcriptData: transcriptResult.transcriptData,
         organizedTranscript,
         transcriptMethod: 'searchapi'
-      });
+      };
+      
+      console.log('Sending successful response for video data');
+      res.json(responseData);
       
     } catch (error) {
       // Handle specific errors
       if (error.message.includes('does not have chapters')) {
+        console.log('Chapter error:', error.message);
         return res.status(400).json({ 
           message: 'This video does not have chapters. Currently, only videos with chapters are supported.' 
         });
       }
       
       if (error.message.includes('No transcript found')) {
+        console.log('Transcript error:', error.message);
         return res.status(404).json({ 
           message: 'No transcript found for this video. Please try a different video.',
           videoId
@@ -422,8 +489,21 @@ app.get('/api/video-data', async (req, res) => {
     console.error('Error processing video:', error.message);
     console.error('Stack trace:', error.stack);
     
-    res.status(500).json({ 
-      message: 'Failed to process video',
+    let statusCode = 500;
+    let errorMessage = 'Failed to process video';
+    
+    // More specific error handling
+    if (error.response) {
+      console.error('Response error:', error.response.status, error.response.data);
+      statusCode = error.response.status;
+      errorMessage = error.response.data?.message || errorMessage;
+    } else if (error.request) {
+      console.error('Request error (no response):', error.request);
+      errorMessage = 'No response received from external API. Please try again later.';
+    }
+    
+    res.status(statusCode).json({ 
+      message: errorMessage,
       error: error.message,
       stack: process.env.NODE_ENV === 'production' ? null : error.stack
     });
@@ -440,6 +520,7 @@ app.post('/api/enhance-chapters', async (req, res) => {
     }
     
     console.log(`Enhancing ${chapters.length} chapters`);
+    console.log('First chapter title:', chapters[0]?.title);
     const enhancedChapters = [];
     
     for (const chapter of chapters) {
@@ -675,6 +756,18 @@ ${chapter.content}`;
   }
 });
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err.message);
+  console.error(err.stack);
+  
+  res.status(500).json({
+    message: 'Internal server error',
+    error: err.message,
+    stack: process.env.NODE_ENV === 'production' ? null : err.stack
+  });
+});
+
 // Enhanced root endpoint
 app.get('/', (req, res) => {
   res.send(`
@@ -683,10 +776,12 @@ app.get('/', (req, res) => {
     <p>YouTube API Key configured: ${YOUTUBE_API_KEY ? 'Yes' : 'No'}</p>
     <p>OpenAI API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}</p>
     <p>SearchAPI.io Key configured: ${SEARCHAPI_KEY ? 'Yes' : 'No'}</p>
-    <p>CORS Origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}</p>
+    <p>CORS Origin: ${process.env.CORS_ORIGIN || 'All origins allowed (*)'}</p>
     <p>Server Time: ${new Date().toISOString()}</p>
     <h2>Test Endpoints:</h2>
     <ul>
+      <li><a href="/api/test">Simple Test (No external API calls)</a></li>
+      <li><a href="/api/cors-test">CORS Test</a></li>
       <li><a href="/api/test-youtube">Test YouTube API</a></li>
       <li><a href="/api/test-openai">Test OpenAI API</a></li>
       <li><a href="/api/test-searchapi/dQw4w9WgXcQ">Test SearchAPI.io</a></li>
@@ -697,7 +792,7 @@ app.get('/', (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`CORS configured for origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
+  console.log(`CORS configured for origin: ${process.env.CORS_ORIGIN || 'All origins allowed (*)'}`);
   console.log(`YouTube API Key configured: ${YOUTUBE_API_KEY ? 'Yes' : 'No'}`);
   console.log(`OpenAI API Key configured: ${process.env.OPENAI_API_KEY ? 'Yes' : 'No'}`);
   console.log(`SearchAPI.io Key configured: ${SEARCHAPI_KEY ? 'Yes' : 'No'}`);
