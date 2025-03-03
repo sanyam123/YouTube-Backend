@@ -11,7 +11,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
-const SEARCHAPI_KEY = process.env.SEARCHAPI_KEY;
+const SEARCHAPI_KEY = '6qmL5aHcxy81xfmZ61JsQgax'; // SearchAPI.io API key
 
 // Initialize OpenAI API with your key
 const openai = new OpenAI({
@@ -19,13 +19,12 @@ const openai = new OpenAI({
 });
 
 // Middleware
-// const corsOptions = {
-//   origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-//   credentials: true,
-//   optionsSuccessStatus: 200
-// };
-// app.use(cors(corsOptions));
-app.use(cors());
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Extract video ID from YouTube URL
